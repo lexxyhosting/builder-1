@@ -44,5 +44,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v3
         with:
-          name: app-release
+          name: ${{ github.event.client_payload.build_id }} # ✅ GANTI JADI INI
           path: app_source/build/app/outputs/flutter-apk/app-release.apk
