@@ -29,9 +29,14 @@ jobs:
           curl -L "${{ github.event.client_payload.zip_url }}" -o project.zip
           unzip project.zip -d app_source
           
+          # 🔑 PERBAIKI PERMISSION! Ini kuncinya
+          chmod -R 755 app_source
+          # atau lebih aman:
+          # chmod -R u+rwx app_source
+          
       - name: Build APK (Auto-Detect Directory)
         run: |
-          # Cari lokasi asli pubspec.yaml
+          # Cari lokasi pubspec.yaml
           TARGET_DIR=$(find ./app_source -name "pubspec.yaml" -print -quit)
           
           if [ -z "$TARGET_DIR" ]; then
@@ -39,19 +44,19 @@ jobs:
             exit 1
           fi
           
-          # Ambil folder PARENT (dirname) dari pubspec.yaml
+          # Ambil folder parent
           TARGET_DIR=$(dirname "$TARGET_DIR")
           
           echo "Project Flutter ditemukan di: $TARGET_DIR"
           
-          # PAKAI TANDA KUTIP! Ini kuncinya
+          # Pindah ke folder project
           cd "$TARGET_DIR"
           
           # Mulai proses kompilasi
           flutter pub get
           flutter build apk --release
           
-          # Pindahkan hasil APK ke folder utama
+          # Pindahkan hasil APK
           cp build/app/outputs/flutter-apk/app-release.apk "$GITHUB_WORKSPACE/final-app.apk"
           
       - name: Upload APK ke Bot
