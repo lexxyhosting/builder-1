@@ -273,34 +273,88 @@ jobs:
             exit 1
           fi
 
-      - name: Find & Verify APK
+           - name: Find & Verify APK
         id: find_apk
         run: |
           echo "🔍 Mencari file APK..."
           cd "$PROJECT_ROOT"
           
-          # Cari APK di semua kemungkinan lokasi
-          APK_FILE=$(find . -name "*.apk" -type f 2>/dev/null | head -1)
+          echo "📁 Mencari di semua folder build/..."
+          find build/ -type f -name "*.apk" 2>/dev/null || echo "Tidak ada di build/"
           
+          echo ""
+          echo "📁 Mencari di seluruh project..."
+          find . -type f -name "*.apk" 2>/dev/null || echo "Tidak ada sama sekali"
+          
+          # Cari APK di lokasi-lokasi umum
+          POSSIBLE_PATHS=(
+            "build/app/outputs/flutter-apk/app-release.apk"
+            "build/app/outputs/apk/release/app-release.apk"
+            "build/app/outputs/flutter-apk/app-debug.apk"
+            "build/app/outputs/apk/debug/app-debug.apk"
+          )
+          
+          APK_FILE=""
+          for path in "${POSSIBLE_PATHS[@]}"; do
+            if [ -f "$path" ]; then
+              APK_FILE="$path"
+              echo "✅ APK ditemukan di: $APK_FILE"
+              break
+            fi
+          done
+          
+          # Kalau masih belum ketemu, cari secara recursive
           if [ -z "$APK_FILE" ]; then
-            echo "❌ APK TIDAK DITEMUKAN!"
-            echo ""
-            echo "📁 Mencari di build/ folder:"
-            find build/ -type f -name "*.apk" 2>/dev/null || echo "Tidak ada file .apk"
-            exit 1
+            echo "🔍 Mencari recursive..."
+            APK_FILE=$(find . -name "app-release.apk" -o -name "app-debug.apk" -o -name "*.apk" 2>/dev/null | head -1)
+            
+            if [ -n "$APK_FILE" ]; then
+              echo "✅ APK ditemukan (recursive): $APK_FILE"
+            fi
           fi
           
-          echo "✅ APK ditemukan: $APK_FILE"
+          # Kalau tetap tidak ketemu
+          if [ -z "$APK_FILE" ]; then
+            echo ""
+            echo "❌ ========================================"
+            echo "❌ APK TIDAK DITEMUKAN!"
+            echo "❌ ========================================"
+            echo ""
+            echo "📁 Isi folder build/ (jika ada):"
+            find build/ -type d 2>/dev/null | head -20 || echo "Folder build/ tidak ada"
+            echo ""
+            echo "📁 Semua file dalam project (max 50):"
+            find . -type f 2>/dev/null | head -50
+            echo ""
+            echo "📁 Folder output Flutter:"
+            ls -la build/app/outputs/ 2>/dev/null || echo "Tidak ada folder outputs"
+            ls -la build/app/outputs/flutter-apk/ 2>/dev/null || echo "Tidak ada folder flutter-apk"
+            ls -la build/app/outputs/apk/ 2>/dev/null || echo "Tidak ada folder apk"
+            exit 1
+          fi
           
           # Info APK
           APK_SIZE=$(stat -c%s "$APK_FILE" 2>/dev/null || echo 0)
           APK_SIZE_MB=$(echo "scale=2; $APK_SIZE / 1048576" | bc 2>/dev/null || echo "unknown")
           
-          echo "📦 Ukuran APK: $APK_SIZE bytes ($APK_SIZE_MB MB)"
+          echo ""
+          echo "📦 Detail APK:"
+          echo "   Path: $APK_FILE"
+          echo "   Size: $APK_SIZE bytes ($APK_SIZE_MB MB)"
           
-          # Simpan path APK (tanpa PROJECT_ROOT di depannya)
-          APK_RELATIVE_PATH="${APK_FILE#./}"
-          echo "APK_PATH=$APK_RELATIVE_PATH" >> $GITHUB_ENV
+          # Simpan path APK RELATIF dari PROJECT_ROOT
+          APK_RELATIVE="${APK_FILE#./}"
+          echo "APK_PATH=$APK_RELATIVE" >> $GITHUB_ENV
+          echo "✅ APK siap diupload"
+
+      - name: Upload APK as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.client_payload.build_id }}
+          path: ${{ env.PROJECT_ROOT }}/${{ env.APK_PATH }}
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: warn
 
       - name: Upload APK as Artifact
         uses: actions/upload-artifact@v4
