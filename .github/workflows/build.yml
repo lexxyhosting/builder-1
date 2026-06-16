@@ -273,7 +273,7 @@ jobs:
             exit 1
           fi
 
-           - name: Find & Verify APK
+      - name: Find & Verify APK
         id: find_apk
         run: |
           echo "🔍 Mencari file APK..."
