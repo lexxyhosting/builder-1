@@ -7,7 +7,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 35  # Tambah sedikit untuk toleransi
+    timeout-minutes: 35
     
     steps:
       - name: Checkout Repository
@@ -42,8 +42,7 @@ jobs:
         with:
           path: |
             ~/.pub-cache
-            app_source/.dart_tool
-          key: ${{ runner.os }}-pub-${{ hashFiles('app_source/pubspec.yaml') }}
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.yaml') }}
           restore-keys: |
             ${{ runner.os }}-pub-
 
@@ -97,15 +96,8 @@ jobs:
           echo "📋 Isi ZIP:"
           ls -la app_source/
           echo ""
-          echo "📁 Struktur folder:"
+          echo "📁 Struktur folder (max depth 2):"
           find app_source -maxdepth 2 -type d | sort
-          
-          # Cek apakah ZIP terbungkus folder ganda
-          ROOT_ITEMS=$(ls -1 app_source/ | wc -l)
-          ROOT_DIRS=$(find app_source -maxdepth 1 -type d | wc -l)
-          echo ""
-          echo "📊 Root items: $ROOT_ITEMS"
-          echo "📊 Root dirs: $((ROOT_DIRS - 1))"
 
       - name: Find Flutter Project Root
         id: find_project
@@ -113,13 +105,9 @@ jobs:
           echo "🔍 Mencari pubspec.yaml..."
           
           # Cari pubspec.yaml di semua lokasi
-          PUBSPEC_FILES=$(find ./app_source -name "pubspec.yaml" -type f 2>/dev/null)
-          PUBSPEC_COUNT=$(echo "$PUBSPEC_FILES" | grep -c "pubspec.yaml" || echo 0)
+          PUBSPEC_FILE=$(find ./app_source -name "pubspec.yaml" -type f 2>/dev/null | head -1)
           
-          echo "📋 File pubspec.yaml ditemukan: $PUBSPEC_COUNT"
-          echo "$PUBSPEC_FILES"
-          
-          if [ "$PUBSPEC_COUNT" -eq 0 ]; then
+          if [ -z "$PUBSPEC_FILE" ]; then
             echo ""
             echo "❌ ========================================"
             echo "❌ ERROR: pubspec.yaml TIDAK DITEMUKAN!"
@@ -139,34 +127,32 @@ jobs:
             exit 1
           fi
           
-          # Ambil pubspec.yaml pertama
-          TARGET_FILE=$(echo "$PUBSPEC_FILES" | head -1)
-          PROJECT_ROOT=$(dirname "$TARGET_FILE")
+          # Ambil folder project root (tanpa pubspec.yaml)
+          PROJECT_ROOT_DIR=$(dirname "$PUBSPEC_FILE")
           
           echo ""
-          echo "✅ pubspec.yaml ditemukan di: $TARGET_FILE"
-          echo "✅ Project root: $PROJECT_ROOT"
+          echo "✅ pubspec.yaml ditemukan di: $PUBSPEC_FILE"
+          echo "✅ Project root: $PROJECT_ROOT_DIR"
           
-          # Simpan untuk step berikutnya
-          echo "PROJECT_ROOT=$PROJECT_ROOT" >> $GITHUB_ENV
-          echo "PROJECT_ROOT=$PROJECT_ROOT" >> $GITHUB_OUTPUT
+          # Simpan path ke environment (PAKAI TANDA KUTIP untuk spasi)
+          echo "PROJECT_ROOT=$PROJECT_ROOT_DIR" >> $GITHUB_ENV
           
           # Tampilkan isi pubspec.yaml
           echo ""
           echo "📄 Isi pubspec.yaml:"
-          cat "$TARGET_FILE"
+          cat "$PUBSPEC_FILE"
           
           # Cek folder wajib
           echo ""
           echo "📁 Memeriksa struktur project..."
           
-          if [ -d "$PROJECT_ROOT/lib" ]; then
+          if [ -d "$PROJECT_ROOT_DIR/lib" ]; then
             echo "✅ Folder lib/ ditemukan"
           else
             echo "⚠️ Folder lib/ TIDAK ditemukan"
           fi
           
-          if [ -d "$PROJECT_ROOT/android" ]; then
+          if [ -d "$PROJECT_ROOT_DIR/android" ]; then
             echo "✅ Folder android/ ditemukan"
           else
             echo "⚠️ Folder android/ TIDAK ditemukan"
@@ -176,21 +162,31 @@ jobs:
         run: |
           echo "⚙️ Konfigurasi Android SDK..."
           
-          cd ${{ env.PROJECT_ROOT }}
+          # ⚠️ PENTING: Pakai tanda kutip untuk path dengan spasi
+          cd "$PROJECT_ROOT"
+          
+          echo "📂 Current directory: $(pwd)"
           
           # Buat local.properties jika belum ada
           if [ ! -f "android/local.properties" ]; then
             echo "📝 Membuat local.properties..."
             echo "sdk.dir=$ANDROID_HOME" > android/local.properties
             echo "flutter.sdk=$FLUTTER_ROOT" >> android/local.properties
+            echo "✅ local.properties dibuat"
           else
             echo "✅ local.properties sudah ada"
             # Update SDK path
             sed -i "s|sdk.dir=.*|sdk.dir=$ANDROID_HOME|g" android/local.properties 2>/dev/null || true
+            echo "✅ SDK path diupdate"
           fi
+          
+          echo ""
+          echo "📋 Isi local.properties:"
+          cat android/local.properties
           
           # Update gradle wrapper jika perlu
           if [ -f "android/gradle/wrapper/gradle-wrapper.properties" ]; then
+            echo ""
             echo "📋 Gradle wrapper version:"
             grep "distributionUrl" android/gradle/wrapper/gradle-wrapper.properties
           fi
@@ -199,7 +195,7 @@ jobs:
         id: flutter_pub
         run: |
           echo "🧹 Membersihkan cache..."
-          cd ${{ env.PROJECT_ROOT }}
+          cd "$PROJECT_ROOT"
           
           # Clean dulu
           flutter clean 2>/dev/null || echo "Clean tidak diperlukan"
@@ -231,17 +227,12 @@ jobs:
             cat /tmp/pub_output
             exit 1
           fi
-          
-          # Tampilkan dependencies
-          echo ""
-          echo "📋 Dependencies terinstall:"
-          flutter pub deps --no-dev 2>/dev/null | head -20 || echo "Tidak bisa menampilkan deps"
 
       - name: Build APK Release
         id: build_apk
         run: |
           echo "🔨 Memulai kompilasi APK Release..."
-          cd ${{ env.PROJECT_ROOT }}
+          cd "$PROJECT_ROOT"
           
           # Build dengan output ke file log
           if flutter build apk --release 2>&1 | tee /tmp/build_output; then
@@ -286,39 +277,38 @@ jobs:
         id: find_apk
         run: |
           echo "🔍 Mencari file APK..."
-          cd ${{ env.PROJECT_ROOT }}
+          cd "$PROJECT_ROOT"
           
           # Cari APK di semua kemungkinan lokasi
-          APK_PATH=$(find . -name "*.apk" -type f 2>/dev/null | head -1)
+          APK_FILE=$(find . -name "*.apk" -type f 2>/dev/null | head -1)
           
-          if [ -z "$APK_PATH" ]; then
+          if [ -z "$APK_FILE" ]; then
             echo "❌ APK TIDAK DITEMUKAN!"
             echo ""
-            echo "📁 Mencari di semua folder:"
-            find . -name "*.apk" -type f 2>/dev/null || echo "Tidak ada file .apk"
-            find build/ -type d 2>/dev/null || echo "Folder build/ tidak ada"
+            echo "📁 Mencari di build/ folder:"
+            find build/ -type f -name "*.apk" 2>/dev/null || echo "Tidak ada file .apk"
             exit 1
           fi
           
-          echo "✅ APK ditemukan: $APK_PATH"
+          echo "✅ APK ditemukan: $APK_FILE"
           
           # Info APK
-          APK_SIZE=$(stat -c%s "$APK_PATH" 2>/dev/null || echo 0)
+          APK_SIZE=$(stat -c%s "$APK_FILE" 2>/dev/null || echo 0)
           APK_SIZE_MB=$(echo "scale=2; $APK_SIZE / 1048576" | bc 2>/dev/null || echo "unknown")
           
           echo "📦 Ukuran APK: $APK_SIZE bytes ($APK_SIZE_MB MB)"
           
-          # Simpan path APK
-          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
-          echo "APK_PATH=$APK_PATH" >> $GITHUB_OUTPUT
+          # Simpan path APK (tanpa PROJECT_ROOT di depannya)
+          APK_RELATIVE_PATH="${APK_FILE#./}"
+          echo "APK_PATH=$APK_RELATIVE_PATH" >> $GITHUB_ENV
 
       - name: Upload APK as Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.client_payload.build_id }}
           path: ${{ env.PROJECT_ROOT }}/${{ env.APK_PATH }}
-          retention-days: 1  # Hapus setelah 1 hari
-          compression-level: 0  # APK sudah terkompresi
+          retention-days: 1
+          compression-level: 0
           if-no-files-found: error
 
       - name: Build Summary
@@ -331,7 +321,6 @@ jobs:
           echo "🆔 Build ID: ${{ github.event.client_payload.build_id }}"
           echo "📦 Repo: ${{ github.repository }}"
           echo "🖥️ Runner: ${{ runner.os }}"
-          echo "⏱ Duration: ${{ job.status }}"
           
           if [ "${{ job.status }}" == "success" ]; then
             echo "✅ Status: SUKSES"
