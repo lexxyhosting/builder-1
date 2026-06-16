@@ -1,4 +1,5 @@
 name: Build APK
+
 on:
   repository_dispatch:
     types: [build_apk]
@@ -6,36 +7,345 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35  # Tambah sedikit untuk toleransi
     
     steps:
-    - uses: actions/checkout@v2
-    
-    - name: Setup Flutter
-      uses: subosito/flutter-action@v2
-      with:
-        flutter-version: '3.16.0'
-        channel: 'stable'
-    
-    - name: Cache Flutter dependencies
-      uses: actions/cache@v2
-      with:
-        path: /opt/hostedtoolcache/flutter
-        key: ${{ runner.os }}-flutter
-    
-    - name: Download ZIP
-      run: |
-        wget "${{ github.event.client_payload.zip_url }}" -O project.zip
-    
-    - name: Extract & Build
-      run: |
-        unzip project.zip -d project
-        cd project
-        flutter pub get
-        flutter build apk --release
-    
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ github.event.client_payload.build_id }}
-        path: project/build/app/outputs/flutter-apk/app-release.apk
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.3'
+          channel: 'stable'
+          cache: true
+          cache-key: 'flutter-:os:-:channel:-:version:-:arch:-:hash:'
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Cache Pub Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            app_source/.dart_tool
+          key: ${{ runner.os }}-pub-${{ hashFiles('app_source/pubspec.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Download User ZIP
+        id: download
+        run: |
+          echo "📥 Mendownload ZIP dari Telegram..."
+          ZIP_URL="${{ github.event.client_payload.zip_url }}"
+          
+          # Download dengan retry (max 3x)
+          for i in 1 2 3; do
+            echo "Percobaan ke-$i..."
+            if curl -L -f --connect-timeout 30 --max-time 120 -o project.zip "$ZIP_URL" 2>/tmp/curl_error; then
+              echo "✅ Download berhasil!"
+              break
+            else
+              echo "⚠️ Download gagal (percobaan $i)"
+              if [ $i -eq 3 ]; then
+                echo "❌ GAGAL: Tidak bisa mendownload ZIP setelah 3x percobaan"
+                cat /tmp/curl_error
+                exit 1
+              fi
+              sleep 10
+            fi
+          done
+          
+          # Cek ukuran file
+          FILE_SIZE=$(stat -c%s project.zip 2>/dev/null || echo 0)
+          echo "📦 Ukuran ZIP: $FILE_SIZE bytes"
+          
+          if [ "$FILE_SIZE" -lt 100 ]; then
+            echo "❌ GAGAL: File ZIP terlalu kecil/kosong"
+            exit 1
+          fi
+
+      - name: Extract & Analyze ZIP
+        id: extract
+        run: |
+          echo "📂 Mengekstrak ZIP..."
+          mkdir -p app_source
+          
+          # Extract dengan error handling
+          if ! unzip -o -q project.zip -d app_source 2>/tmp/unzip_error; then
+            echo "❌ GAGAL: File ZIP rusak atau tidak bisa diekstrak"
+            cat /tmp/unzip_error
+            exit 1
+          fi
+          
+          chmod -R 777 app_source
+          
+          echo "📋 Isi ZIP:"
+          ls -la app_source/
+          echo ""
+          echo "📁 Struktur folder:"
+          find app_source -maxdepth 2 -type d | sort
+          
+          # Cek apakah ZIP terbungkus folder ganda
+          ROOT_ITEMS=$(ls -1 app_source/ | wc -l)
+          ROOT_DIRS=$(find app_source -maxdepth 1 -type d | wc -l)
+          echo ""
+          echo "📊 Root items: $ROOT_ITEMS"
+          echo "📊 Root dirs: $((ROOT_DIRS - 1))"
+
+      - name: Find Flutter Project Root
+        id: find_project
+        run: |
+          echo "🔍 Mencari pubspec.yaml..."
+          
+          # Cari pubspec.yaml di semua lokasi
+          PUBSPEC_FILES=$(find ./app_source -name "pubspec.yaml" -type f 2>/dev/null)
+          PUBSPEC_COUNT=$(echo "$PUBSPEC_FILES" | grep -c "pubspec.yaml" || echo 0)
+          
+          echo "📋 File pubspec.yaml ditemukan: $PUBSPEC_COUNT"
+          echo "$PUBSPEC_FILES"
+          
+          if [ "$PUBSPEC_COUNT" -eq 0 ]; then
+            echo ""
+            echo "❌ ========================================"
+            echo "❌ ERROR: pubspec.yaml TIDAK DITEMUKAN!"
+            echo "❌ ========================================"
+            echo ""
+            echo "📁 Semua file dalam ZIP:"
+            find ./app_source -type f | head -30
+            echo ""
+            echo "💡 SOLUSI:"
+            echo "1. Pastikan pubspec.yaml ada DI ROOT ZIP"
+            echo "2. Jangan ZIP folder luarnya (buka folder project dulu)"
+            echo "3. Struktur yang benar:"
+            echo "   project.zip"
+            echo "   ├── pubspec.yaml  ← HARUS DI SINI"
+            echo "   ├── lib/"
+            echo "   └── android/"
+            exit 1
+          fi
+          
+          # Ambil pubspec.yaml pertama
+          TARGET_FILE=$(echo "$PUBSPEC_FILES" | head -1)
+          PROJECT_ROOT=$(dirname "$TARGET_FILE")
+          
+          echo ""
+          echo "✅ pubspec.yaml ditemukan di: $TARGET_FILE"
+          echo "✅ Project root: $PROJECT_ROOT"
+          
+          # Simpan untuk step berikutnya
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> $GITHUB_ENV
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> $GITHUB_OUTPUT
+          
+          # Tampilkan isi pubspec.yaml
+          echo ""
+          echo "📄 Isi pubspec.yaml:"
+          cat "$TARGET_FILE"
+          
+          # Cek folder wajib
+          echo ""
+          echo "📁 Memeriksa struktur project..."
+          
+          if [ -d "$PROJECT_ROOT/lib" ]; then
+            echo "✅ Folder lib/ ditemukan"
+          else
+            echo "⚠️ Folder lib/ TIDAK ditemukan"
+          fi
+          
+          if [ -d "$PROJECT_ROOT/android" ]; then
+            echo "✅ Folder android/ ditemukan"
+          else
+            echo "⚠️ Folder android/ TIDAK ditemukan"
+          fi
+
+      - name: Configure Android SDK
+        run: |
+          echo "⚙️ Konfigurasi Android SDK..."
+          
+          cd ${{ env.PROJECT_ROOT }}
+          
+          # Buat local.properties jika belum ada
+          if [ ! -f "android/local.properties" ]; then
+            echo "📝 Membuat local.properties..."
+            echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+            echo "flutter.sdk=$FLUTTER_ROOT" >> android/local.properties
+          else
+            echo "✅ local.properties sudah ada"
+            # Update SDK path
+            sed -i "s|sdk.dir=.*|sdk.dir=$ANDROID_HOME|g" android/local.properties 2>/dev/null || true
+          fi
+          
+          # Update gradle wrapper jika perlu
+          if [ -f "android/gradle/wrapper/gradle-wrapper.properties" ]; then
+            echo "📋 Gradle wrapper version:"
+            grep "distributionUrl" android/gradle/wrapper/gradle-wrapper.properties
+          fi
+
+      - name: Flutter Clean & Pub Get
+        id: flutter_pub
+        run: |
+          echo "🧹 Membersihkan cache..."
+          cd ${{ env.PROJECT_ROOT }}
+          
+          # Clean dulu
+          flutter clean 2>/dev/null || echo "Clean tidak diperlukan"
+          
+          echo "📦 Mendownload dependencies..."
+          
+          # Pub get dengan error handling
+          if flutter pub get 2>&1 | tee /tmp/pub_output; then
+            echo "✅ Pub get berhasil!"
+          else
+            echo ""
+            echo "❌ ========================================"
+            echo "❌ ERROR: Gagal mendownload dependencies!"
+            echo "❌ ========================================"
+            
+            # Cek error umum
+            if grep -q "version solving failed" /tmp/pub_output; then
+              echo ""
+              echo "💡 MASALAH: Konflik versi package"
+              echo "   Solusi: Update versi package di pubspec.yaml"
+            elif grep -q "connection timed out" /tmp/pub_output; then
+              echo ""
+              echo "💡 MASALAH: Koneksi timeout"
+              echo "   Solusi: Coba build ulang"
+            fi
+            
+            echo ""
+            echo "📋 Log lengkap:"
+            cat /tmp/pub_output
+            exit 1
+          fi
+          
+          # Tampilkan dependencies
+          echo ""
+          echo "📋 Dependencies terinstall:"
+          flutter pub deps --no-dev 2>/dev/null | head -20 || echo "Tidak bisa menampilkan deps"
+
+      - name: Build APK Release
+        id: build_apk
+        run: |
+          echo "🔨 Memulai kompilasi APK Release..."
+          cd ${{ env.PROJECT_ROOT }}
+          
+          # Build dengan output ke file log
+          if flutter build apk --release 2>&1 | tee /tmp/build_output; then
+            echo ""
+            echo "✅ ========================================"
+            echo "✅ BUILD BERHASIL!"
+            echo "✅ ========================================"
+          else
+            echo ""
+            echo "❌ ========================================"
+            echo "❌ BUILD GAGAL!"
+            echo "❌ ========================================"
+            
+            # Analisis error
+            BUILD_LOG=$(cat /tmp/build_output)
+            
+            if echo "$BUILD_LOG" | grep -q "Gradle"; then
+              echo ""
+              echo "💡 MASALAH: Gradle error"
+              echo "   Cek versi Gradle di android/gradle/wrapper/gradle-wrapper.properties"
+            elif echo "$BUILD_LOG" | grep -q "Android SDK"; then
+              echo ""
+              echo "💡 MASALAH: Android SDK tidak ditemukan"
+              echo "   Hapus file android/local.properties dari ZIP"
+            elif echo "$BUILD_LOG" | grep -q "Kotlin"; then
+              echo ""
+              echo "💡 MASALAH: Versi Kotlin tidak kompatibel"
+              echo "   Update ext.kotlin_version di android/build.gradle"
+            elif echo "$BUILD_LOG" | grep -qi "memory\|heap"; then
+              echo ""
+              echo "💡 MASALAH: Kehabisan memory"
+              echo "   Project terlalu besar, kurangi asset"
+            fi
+            
+            echo ""
+            echo "📋 Log error lengkap (100 baris terakhir):"
+            tail -100 /tmp/build_output
+            exit 1
+          fi
+
+      - name: Find & Verify APK
+        id: find_apk
+        run: |
+          echo "🔍 Mencari file APK..."
+          cd ${{ env.PROJECT_ROOT }}
+          
+          # Cari APK di semua kemungkinan lokasi
+          APK_PATH=$(find . -name "*.apk" -type f 2>/dev/null | head -1)
+          
+          if [ -z "$APK_PATH" ]; then
+            echo "❌ APK TIDAK DITEMUKAN!"
+            echo ""
+            echo "📁 Mencari di semua folder:"
+            find . -name "*.apk" -type f 2>/dev/null || echo "Tidak ada file .apk"
+            find build/ -type d 2>/dev/null || echo "Folder build/ tidak ada"
+            exit 1
+          fi
+          
+          echo "✅ APK ditemukan: $APK_PATH"
+          
+          # Info APK
+          APK_SIZE=$(stat -c%s "$APK_PATH" 2>/dev/null || echo 0)
+          APK_SIZE_MB=$(echo "scale=2; $APK_SIZE / 1048576" | bc 2>/dev/null || echo "unknown")
+          
+          echo "📦 Ukuran APK: $APK_SIZE bytes ($APK_SIZE_MB MB)"
+          
+          # Simpan path APK
+          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
+          echo "APK_PATH=$APK_PATH" >> $GITHUB_OUTPUT
+
+      - name: Upload APK as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.client_payload.build_id }}
+          path: ${{ env.PROJECT_ROOT }}/${{ env.APK_PATH }}
+          retention-days: 1  # Hapus setelah 1 hari
+          compression-level: 0  # APK sudah terkompresi
+          if-no-files-found: error
+
+      - name: Build Summary
+        if: always()
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "📊 BUILD SUMMARY"
+          echo "=========================================="
+          echo "🆔 Build ID: ${{ github.event.client_payload.build_id }}"
+          echo "📦 Repo: ${{ github.repository }}"
+          echo "🖥️ Runner: ${{ runner.os }}"
+          echo "⏱ Duration: ${{ job.status }}"
+          
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Status: SUKSES"
+            echo "📥 Artifact: ${{ github.event.client_payload.build_id }}"
+          else
+            echo "❌ Status: GAGAL"
+            echo "💡 Cek log di atas untuk detail error"
+          fi
+          echo "=========================================="
+
+      - name: Cleanup (Always)
+        if: always()
+        run: |
+          echo "🧹 Membersihkan file temporary..."
+          rm -f project.zip
+          rm -rf app_source
+          echo "✅ Cleanup selesai"
