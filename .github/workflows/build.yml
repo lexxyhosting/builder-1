@@ -22,7 +22,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.3'
+          flutter-version: '3.27.4'  # ⚠️ UPDATE KE VERSI TERBARU (Dart SDK 3.6.x)
           channel: 'stable'
           cache: true
 
@@ -64,163 +64,139 @@ jobs:
             exit 1
           fi
 
-      - name: Extract & Debug ZIP Structure
+      - name: Extract ZIP
         run: |
           echo "📂 Mengekstrak ZIP..."
           mkdir -p app_source
           unzip -o -q project.zip -d app_source
+          chmod -R 777 app_source
           
-          echo ""
-          echo "=========================================="
-          echo "📋 ANALISIS STRUKTUR ZIP"
-          echo "=========================================="
-          echo ""
-          echo "📁 Root folder contents:"
+          echo "📋 Isi ZIP:"
           ls -la app_source/
-          
-          echo ""
-          echo "📁 Mencari pubspec.yaml..."
-          find app_source -name "pubspec.yaml" -type f 2>/dev/null || echo "❌ pubspec.yaml TIDAK DITEMUKAN!"
-          
-          echo ""
-          echo "📁 Mencari file .dart (lib/):"
-          find app_source -name "*.dart" -type f 2>/dev/null | head -10 || echo "❌ Tidak ada file .dart!"
-          
-          echo ""
-          echo "📁 Struktur folder (max 3 level):"
-          find app_source -maxdepth 3 -type d | sort
-          
-          echo ""
-          echo "📁 Total files:"
-          find app_source -type f | wc -l
 
-      - name: Find & Fix Project Structure
+      - name: Find Project Root
         id: find_project
         run: |
-          echo "🔍 Menganalisis project..."
+          echo "🔍 Mencari pubspec.yaml..."
           
-          # Cari pubspec.yaml
           PUBSPEC_FILE=$(find ./app_source -name "pubspec.yaml" -type f 2>/dev/null | head -1)
           
           if [ -z "$PUBSPEC_FILE" ]; then
-            echo ""
-            echo "❌ ========================================"
-            echo "❌ FATAL: pubspec.yaml TIDAK DITEMUKAN!"
-            echo "❌ ========================================"
-            echo ""
-            echo "💡 Ini adalah penyebab build gagal!"
-            echo ""
-            echo "📁 Isi ZIP lengkap (semua file):"
-            find ./app_source -type f
-            echo ""
-            echo "🛠 CARA MEMPERBAIKI:"
-            echo "1. Buka folder project Flutter di komputer kamu"
-            echo "2. Pastikan ada file pubspec.yaml"
-            echo "3. Pilih SEMUA file di dalam folder project"
-            echo "4. Klik kanan → Compress/ZIP"
-            echo "5. JANGAN ZIP folder luarnya!"
-            echo ""
-            echo "Struktur ZIP yang BENAR:"
-            echo "  project.zip"
-            echo "  ├── pubspec.yaml  ← harus ada!"
-            echo "  ├── lib/"
-            echo "  │   └── main.dart"
-            echo "  └── android/"
+            echo "❌ pubspec.yaml TIDAK DITEMUKAN!"
+            echo "📁 Semua file:"
+            find ./app_source -type f | head -30
             exit 1
           fi
           
           PROJECT_ROOT=$(dirname "$PUBSPEC_FILE")
-          echo "✅ pubspec.yaml ditemukan di: $PUBSPEC_FILE"
           echo "✅ Project root: $PROJECT_ROOT"
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> $GITHUB_ENV
           
           echo ""
-          echo "📄 Isi pubspec.yaml:"
+          echo "📄 pubspec.yaml:"
           cat "$PUBSPEC_FILE"
-          
-          # Cek struktur project
-          echo ""
-          echo "📁 Verifikasi struktur project..."
-          
-          if [ -d "$PROJECT_ROOT/lib" ]; then
-            echo "✅ Folder lib/ ADA"
-            ls -la "$PROJECT_ROOT/lib/"
-          else
-            echo "❌ Folder lib/ TIDAK ADA!"
-          fi
-          
-          if [ -d "$PROJECT_ROOT/android" ]; then
-            echo "✅ Folder android/ ADA"
-          else
-            echo "⚠️ Folder android/ tidak ada (akan dibuat saat pub get)"
-          fi
 
-      - name: Configure Flutter Project
+      - name: Fix Permissions & Config
         run: |
           cd "$PROJECT_ROOT"
           
-          echo "⚙️ Konfigurasi Flutter..."
+          # Fix permissions
+          echo "🔧 Fix permissions..."
+          chmod -R 777 . 2>/dev/null || true
           
-          # Buat android folder jika belum ada
-          if [ ! -d "android" ]; then
-            echo "📝 Membuat Android project..."
-            flutter create --platforms android . 2>&1 || echo "Create android project (mungkin sudah ada)"
+          # Hapus folder iOS untuk menghindari error (kita build Android only)
+          if [ -d "ios" ]; then
+            echo "🗑 Menghapus folder ios (tidak diperlukan untuk APK)..."
+            rm -rf ios
           fi
           
           # Buat local.properties
-          if [ ! -f "android/local.properties" ]; then
-            echo "📝 Membuat local.properties..."
-            mkdir -p android
-            echo "sdk.dir=$ANDROID_HOME" > android/local.properties
-            echo "flutter.sdk=$FLUTTER_ROOT" >> android/local.properties
-          else
-            echo "✅ local.properties sudah ada"
-            sed -i "s|sdk.dir=.*|sdk.dir=$ANDROID_HOME|g" android/local.properties 2>/dev/null || true
-          fi
+          echo "⚙️ Konfigurasi Android SDK..."
+          mkdir -p android
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          echo "flutter.sdk=$FLUTTER_ROOT" >> android/local.properties
           
-          echo "📋 Konfigurasi Android:"
-          cat android/local.properties 2>/dev/null || echo "Tidak ada local.properties"
-          
-          # Cek gradle wrapper
-          if [ -f "android/gradle/wrapper/gradle-wrapper.properties" ]; then
-            echo ""
-            echo "📋 Gradle version:"
-            grep distributionUrl android/gradle/wrapper/gradle-wrapper.properties
-          fi
+          echo "📋 local.properties:"
+          cat android/local.properties
 
-      - name: Flutter Clean & Pub Get
+      - name: Check Flutter & Dart Version
+        run: |
+          echo "📋 Flutter version:"
+          flutter --version
+          
+          echo ""
+          echo "📋 Dart version:"
+          dart --version
+          
+          cd "$PROJECT_ROOT"
+          
+          echo ""
+          echo "📋 Required SDK version from pubspec.yaml:"
+          grep -A 5 "environment:" pubspec.yaml 2>/dev/null || echo "No SDK constraint"
+
+      - name: Update SDK Constraint if Needed
+        run: |
+          cd "$PROJECT_ROOT"
+          
+          # Dapatkan Dart SDK version saat ini
+          DART_VERSION=$(dart --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1)
+          MAJOR_MINOR=$(echo "$DART_VERSION" | cut -d. -f1,2)
+          
+          echo "Current Dart SDK: $DART_VERSION"
+          echo "Major.Minor: $MAJOR_MINOR"
+          
+          # Update SDK constraint di pubspec.yaml
+          if grep -q "sdk:" pubspec.yaml; then
+            echo "🔄 Mengupdate SDK constraint..."
+            # Ganti sdk constraint menjadi versi yang tersedia
+            sed -i "s/sdk: \">=.*\"/sdk: \">=$MAJOR_MINOR.0 <4.0.0\"/g" pubspec.yaml 2>/dev/null || true
+            sed -i "s/sdk: \">=.*\"/sdk: \">=$MAJOR_MINOR.0 <4.0.0\"/g" pubspec.yaml 2>/dev/null || true
+            echo "✅ SDK constraint updated"
+          fi
+          
+          echo ""
+          echo "📄 Updated pubspec.yaml environment:"
+          grep -A 3 "environment:" pubspec.yaml 2>/dev/null
+
+      - name: Flutter Pub Get
         run: |
           cd "$PROJECT_ROOT"
           
           echo "🧹 Flutter clean..."
-          flutter clean 2>&1 || echo "Clean selesai/gagal"
+          flutter clean 2>&1 || true
           
           echo ""
           echo "📦 Flutter pub get..."
-          flutter pub get 2>&1
-          
-          if [ $? -ne 0 ]; then
+          if flutter pub get 2>&1; then
+            echo "✅ Pub get berhasil!"
+          else
             echo ""
-            echo "❌ GAGAL PUB GET!"
-            echo "💡 Periksa dependencies di pubspec.yaml"
-            exit 1
+            echo "❌ Pub get gagal! Mencoba dengan --no-pub..."
+            
+            # Coba perbaiki dependencies
+            echo "🔄 Mencoba flutter pub upgrade..."
+            flutter pub upgrade 2>&1 || true
+            
+            echo ""
+            echo "🔄 Mencoba flutter pub get lagi..."
+            if flutter pub get 2>&1; then
+              echo "✅ Pub get berhasil setelah upgrade!"
+            else
+              echo "❌ Pub get tetap gagal"
+              echo "💡 Coba cek versi package di pubspec.yaml"
+              exit 1
+            fi
           fi
-          
-          echo "✅ Pub get berhasil!"
-          
-          echo ""
-          echo "📋 Dependencies:"
-          flutter pub deps 2>&1 | head -20 || echo "Tidak bisa menampilkan"
 
       - name: Build APK
         run: |
           cd "$PROJECT_ROOT"
           
-          echo "🔨 MEMULAI BUILD APK..."
+          echo "🔨 BUILD APK RELEASE..."
           echo "=========================================="
           
-          # Build dengan verbose output
-          if flutter build apk --release --verbose 2>&1 | tee /tmp/build_log; then
+          # Build APK
+          if flutter build apk --release 2>&1 | tee /tmp/build_log; then
             echo ""
             echo "=========================================="
             echo "✅ BUILD BERHASIL!"
@@ -231,43 +207,35 @@ jobs:
             echo "❌ BUILD GAGAL!"
             echo "=========================================="
             echo ""
-            echo "📋 ERROR LOG (100 baris terakhir):"
-            tail -100 /tmp/build_log
+            echo "📋 Error log (50 baris terakhir):"
+            tail -50 /tmp/build_log
             exit 1
           fi
 
-      - name: Locate APK
+      - name: Find APK
         run: |
           cd "$PROJECT_ROOT"
           
           echo "🔍 Mencari APK..."
           
-          # Debug struktur build
+          # Tampilkan struktur build folder
           echo "📁 Struktur build/:"
-          find build/ -type d 2>/dev/null | head -20 || echo "❌ Folder build/ TIDAK ADA"
-          
-          echo ""
-          echo "📁 Mencari file .apk:"
-          find . -name "*.apk" -type f 2>/dev/null || echo "❌ TIDAK ADA FILE .apk!"
+          find build/ -type d 2>/dev/null | head -10 || echo "Folder build/ tidak ada"
           
           # Cari APK
-          APK_FILE=$(find . -path "*/flutter-apk/*.apk" -o -path "*/apk/release/*.apk" -o -name "app-release.apk" 2>/dev/null | head -1)
+          APK_FILE=$(find . -name "*.apk" -type f 2>/dev/null | head -1)
           
           if [ -z "$APK_FILE" ]; then
-            APK_FILE=$(find . -name "*.apk" 2>/dev/null | head -1)
-          fi
-          
-          if [ -z "$APK_FILE" ]; then
-            echo ""
-            echo "❌ APK TIDAK DITEMUKAN!"
-            echo ""
-            echo "📁 Debug - semua file dalam build/:"
-            find build/ -type f 2>/dev/null | head -50
+            echo "❌ APK tidak ditemukan!"
+            echo "📁 Semua file di build/:"
+            find build/ -type f 2>/dev/null | head -30
             exit 1
           fi
           
-          echo "✅ APK: $APK_FILE"
+          echo "✅ APK ditemukan: $APK_FILE"
           ls -lh "$APK_FILE"
+          
+          # Simpan path
           echo "APK_PATH=$APK_FILE" >> $GITHUB_ENV
 
       - name: Upload APK
@@ -282,6 +250,14 @@ jobs:
         if: always()
         run: |
           echo "=========================================="
-          echo "BUILD ID: ${{ github.event.client_payload.build_id }}"
-          echo "STATUS: ${{ job.status }}"
+          echo "📊 BUILD RESULT"
+          echo "=========================================="
+          echo "🆔 Build ID: ${{ github.event.client_payload.build_id }}"
+          echo "📦 Status: ${{ job.status }}"
+          
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ BUILD SUKSES - APK siap didownload!"
+          else
+            echo "❌ BUILD GAGAL - Cek log di atas"
+          fi
           echo "=========================================="
