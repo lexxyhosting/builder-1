@@ -28,35 +28,48 @@ jobs:
         run: |
           curl -L "${{ github.event.client_payload.zip_url }}" -o project.zip
           unzip project.zip -d app_source
-          
-          # 🔑 PERBAIKI PERMISSION! Ini kuncinya
           chmod -R 755 app_source
-          # atau lebih aman:
-          # chmod -R u+rwx app_source
           
-      - name: Build APK (Auto-Detect Directory)
+      - name: Fix Compatibility Issues
         run: |
-          # Cari lokasi pubspec.yaml
-          TARGET_DIR=$(find ./app_source -name "pubspec.yaml" -print -quit)
+          TARGET_DIR=$(dirname $(find ./app_source -name "pubspec.yaml" -print -quit))
           
           if [ -z "$TARGET_DIR" ]; then
-            echo "ERROR: pubspec.yaml tidak ditemukan di dalam file ZIP!"
+            echo "ERROR: pubspec.yaml tidak ditemukan!"
             exit 1
           fi
           
-          # Ambil folder parent
-          TARGET_DIR=$(dirname "$TARGET_DIR")
-          
-          echo "Project Flutter ditemukan di: $TARGET_DIR"
-          
-          # Pindah ke folder project
           cd "$TARGET_DIR"
           
-          # Mulai proses kompilasi
+          echo "=== Fix pubspec.yaml untuk kompatibilitas ==="
+          
+          # 1. Fix font_awesome_flutter (penyebab utama error)
+          sed -i 's/font_awesome_flutter:.*/font_awesome_flutter: ^11.0.0/' pubspec.yaml
+          
+          # 2. Fix package lain yang mungkin bermasalah
+          # Update constraint supaya bisa pakai versi terbaru
+          sed -i 's/carousel_slider:.*/carousel_slider: ^5.0.0/' pubspec.yaml
+          sed -i 's/chewie:.*/chewie: ^1.14.0/' pubspec.yaml
+          sed -i 's/flutter_launcher_icons:.*/flutter_launcher_icons: ^0.14.0/' pubspec.yaml
+          sed -i 's/video_player:.*/video_player: ^2.11.0/' pubspec.yaml
+          sed -i 's/webview_flutter:.*/webview_flutter: ^4.14.0/' pubspec.yaml
+          
+          echo "=== Isi pubspec.yaml setelah fix ==="
+          cat pubspec.yaml
+          
+          # 3. Clean cache & get packages
+          flutter clean
           flutter pub get
+          
+      - name: Build APK
+        run: |
+          TARGET_DIR=$(dirname $(find ./app_source -name "pubspec.yaml" -print -quit))
+          cd "$TARGET_DIR"
+          
+          echo "=== Build APK Release ==="
           flutter build apk --release
           
-          # Pindahkan hasil APK
+          # Copy hasil
           cp build/app/outputs/flutter-apk/app-release.apk "$GITHUB_WORKSPACE/final-app.apk"
           
       - name: Upload APK ke Bot
