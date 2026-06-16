@@ -1,153 +1,41 @@
-name: Flutter Build APK
-
+name: Build APK
 on:
   repository_dispatch:
     types: [build_apk]
- 
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.22.3'
-          channel: 'stable'
-
-      - name: Download & Extract User ZIP
-        run: |
-          curl -L "${{ github.event.client_payload.zip_url }}" -o project.zip
-          unzip -o project.zip -d app_source
-          chmod -R 777 app_source
-
-      - name: Cari & Fix Project Flutter
-        run: |
-          # CARI FOLDER PROJECT (handle semua karakter aneh)
-          TARGET_FILE=$(find ./app_source -name "pubspec.yaml" -type f 2>/dev/null | head -1)
-          
-          if [ -z "$TARGET_FILE" ]; then
-            echo "ERROR: pubspec.yaml tidak ditemukan!"
-            exit 1
-          fi
-          
-          TARGET_DIR=$(dirname "$TARGET_FILE")
-          
-          echo "Project ditemukan di: $TARGET_DIR"
-          ls -la "$TARGET_DIR"
-          
-          # SIMPAN PATH KE FILE AGAR BISA DIAKSES STEP LAIN
-          echo "PROJECT_DIR=$TARGET_DIR" >> $GITHUB_ENV
-          
-          cd "$TARGET_DIR"
-          
-          # ==========================================
-          # FIX 1: Hapus pubspec.lock & upgrade paksa
-          # ==========================================
-          rm -f pubspec.lock
-          
-          # ==========================================
-          # FIX 2: Timpa pubspec.yaml dengan versi kompatibel
-          # ==========================================
-          cat > pubspec.yaml << 'PUBEOF'
-name: temp_app
-description: A new Flutter project.
-publish_to: 'none'
-version: 1.0.0+1
-
-environment:
-  sdk: '>=3.2.0 <4.0.0'
-
-dependencies:
-  flutter:
-    sdk: flutter
-  cupertino_icons: ^1.0.8
-  supabase_flutter: ^2.5.0
-  webview_flutter: ^4.8.0
-  url_launcher: ^6.3.0
-  shared_preferences: ^2.3.0
-  share_plus: ^9.0.0
-  path_provider: ^2.1.0
-  permission_handler: ^11.3.0
-  device_info_plus: ^10.0.0
-  package_info_plus: ^8.0.0
-  network_info_plus: ^5.0.0
-  wakelock_plus: ^1.2.0
-  video_player: ^2.9.0
-  chewie: ^1.8.0
-  carousel_slider: ^4.2.0
-  font_awesome_flutter: ^10.7.0
-
-dev_dependencies:
-  flutter_test:
-    sdk: flutter
-  flutter_lints: ^4.0.0
-  flutter_launcher_icons: ^0.13.1
-
-flutter:
-  uses-material-design: true
-  
-PUBEOF
-          
-          echo "=== pubspec.yaml BARU ==="
-          cat pubspec.yaml
-          
-          # ==========================================
-          # FIX 3: Fix Android build config
-          # ==========================================
-          # Fix compileSdk & targetSdk
-          if [ -f android/app/build.gradle ]; then
-            sed -i 's/compileSdkVersion.*/compileSdkVersion 34/g' android/app/build.gradle
-            sed -i 's/targetSdkVersion.*/targetSdkVersion 34/g' android/app/build.gradle
-            sed -i 's/compileSdk.*=.*/compileSdk = 34/g' android/app/build.gradle
-            sed -i 's/targetSdk.*=.*/targetSdk = 34/g' android/app/build.gradle
-          fi
-          
-          if [ -f android/app/build.gradle.kts ]; then
-            sed -i 's/compileSdk.*=.*/compileSdk = 34/g' android/app/build.gradle.kts
-            sed -i 's/targetSdk.*=.*/targetSdk = 34/g' android/app/build.gradle.kts
-          fi
-          
-          # Fix gradle version
-          if [ -f android/build.gradle ]; then
-            sed -i "s/classpath 'com.android.tools.build:gradle:.*/classpath 'com.android.tools.build:gradle:7.3.1'/g" android/build.gradle
-          fi
-          
-          # ==========================================
-          # FIX 4: Clean install
-          # ==========================================
-          flutter clean
-          flutter pub get
-          
-      - name: Build APK Release
-        run: |
-          cd "$PROJECT_DIR"
-          
-          echo "Mulai build APK..."
-          flutter build apk --release --no-tree-shake-icons 2>&1 | tee build.log
-          
-          # Cek hasil build
-          if [ -f build/app/outputs/flutter-apk/app-release.apk ]; then
-            echo "BUILD SUKSES!"
-            cp build/app/outputs/flutter-apk/app-release.apk "$GITHUB_WORKSPACE/final-app.apk"
-            ls -lh "$GITHUB_WORKSPACE/final-app.apk"
-          else
-            echo "BUILD GAGAL! Cek error:"
-            tail -50 build.log
-            exit 1
-          fi
-          
-      - name: Upload APK ke Bot
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ github.event.client_payload.build_id }}
-          path: final-app.apk
+    - uses: actions/checkout@v2
+    
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.16.0'
+        channel: 'stable'
+    
+    - name: Cache Flutter dependencies
+      uses: actions/cache@v2
+      with:
+        path: /opt/hostedtoolcache/flutter
+        key: ${{ runner.os }}-flutter
+    
+    - name: Download ZIP
+      run: |
+        wget "${{ github.event.client_payload.zip_url }}" -O project.zip
+    
+    - name: Extract & Build
+      run: |
+        unzip project.zip -d project
+        cd project
+        flutter pub get
+        flutter build apk --release
+    
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ github.event.client_payload.build_id }}
+        path: project/build/app/outputs/flutter-apk/app-release.apk
